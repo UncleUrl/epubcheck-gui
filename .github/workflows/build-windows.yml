@@ -1,0 +1,131 @@
+name: Build Windows Installer
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:          # allows a manual run from the Actions tab
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      # ── 1. Get the source ────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. JDK 17 (includes jpackage) ────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # ── 3. Install WiX Toolset (required by jpackage --type exe) ─────
+      - name: Install WiX Toolset
+        shell: pwsh
+        run: |
+          choco install wixtoolset --no-progress -y
+          # Add WiX bin to PATH for subsequent steps
+          $wix = Get-ChildItem "C:\Program Files (x86)\WiX Toolset*" |
+                   Sort-Object Name -Descending |
+                   Select-Object -First 1
+          if ($wix) {
+            $wixBin = Join-Path $wix.FullName "bin"
+            Write-Host "Adding WiX to PATH: $wixBin"
+            "$wixBin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          } else {
+            Write-Error "WiX Toolset installation not found."
+            exit 1
+          }
+
+      # ── 4. Assemble dependency JARs ───────────────────────────────────
+      - name: Prepare dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist, out | Out-Null
+          Copy-Item epubcheck.jar dist/
+          Copy-Item lib/*.jar     dist/
+          Write-Host "JARs in dist/:"
+          Get-ChildItem dist -Filter "*.jar" | Select-Object -ExpandProperty Name
+
+      # ── 5. Compile the GUI source ─────────────────────────────────────
+      - name: Compile
+        shell: pwsh
+        run: |
+          $classpath = (Get-ChildItem dist -Filter "*.jar").FullName -join ";"
+          javac -cp $classpath -d out src/EPUBCheckGUI.java
+
+      # ── 6. Generate a spec-compliant MANIFEST.MF ──────────────────────
+      #    JAR manifest lines must be <= 72 bytes; continuation lines
+      #    start with a single space.
+      - name: Generate MANIFEST.MF
+        shell: python
+        run: |
+          import os
+
+          jars = sorted(f for f in os.listdir('dist') if f.endswith('.jar'))
+
+          header = 'Class-Path: '
+          line   = header
+          lines  = []
+          for jar in jars:
+              entry = jar + ' '
+              if len(line) + len(entry) > 72:
+                  lines.append(line.rstrip())
+                  line = ' ' + entry
+              else:
+                  line += entry
+          if line.strip():
+              lines.append(line.rstrip())
+
+          manifest = (
+              'Manifest-Version: 1.0\n'
+              'Main-Class: EPUBCheckGUI\n'
+              + '\n'.join(lines)
+              + '\n\n'          # blank line terminates the manifest
+          )
+
+          os.makedirs('manifest', exist_ok=True)
+          with open('manifest/MANIFEST.MF', 'w', newline='\n') as f:
+              f.write(manifest)
+
+          print('=== Generated MANIFEST.MF ===')
+          print(manifest)
+
+      # ── 7. Package the compiled classes into an app JAR ───────────────
+      - name: Package app JAR
+        shell: pwsh
+        run: |
+          jar cfm dist/EPUBCheckGUI.jar manifest/MANIFEST.MF -C out .
+
+      # ── 8. Build the Windows .exe installer ───────────────────────────
+      #    jpackage bundles a private JRE: users need nothing pre-installed.
+      - name: Create Windows installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path installer | Out-Null
+          jpackage `
+            --input       dist `
+            --main-jar    EPUBCheckGUI.jar `
+            --main-class  EPUBCheckGUI `
+            --name        "EPUBCheck" `
+            --app-version "5.2.1" `
+            --type        exe `
+            --dest        installer `
+            --description "EPUB validation tool - EPUBCheck 5.2.1" `
+            --vendor      "DAISY Consortium" `
+            --win-dir-chooser `
+            --win-shortcut `
+            --win-menu
+
+          Write-Host "Installer contents:"
+          Get-ChildItem installer
+
+      # ── 9. Upload as a downloadable Actions artifact ──────────────────
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EPUBCheck-Windows-Installer
+          path: installer/*.exe
+          retention-days: 30
