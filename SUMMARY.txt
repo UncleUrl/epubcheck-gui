@@ -1,0 +1,114 @@
+EPUBCheck GUI Wrapper — Project Summary
+========================================
+Created: March 19, 2026
+Repository: https://github.com/UncleUrl/epubcheck-gui
+
+
+WHAT WAS BUILT
+--------------
+A standalone Windows desktop application that wraps EPUBCheck 5.2.1 behind a
+simple graphical interface. Users click a button to select an EPUB file, click
+"Check EPUB", and see a full list of errors/warnings with a colour-coded
+PASS / WARNINGS / ERRORS status at the bottom. No command line, no Java
+installation required.
+
+
+FILES CREATED
+-------------
+src/EPUBCheckGUI.java
+  The GUI application. A single Java Swing file containing:
+  - "Browse for EPUB..." button (JFileChooser filtered to .epub files)
+  - Read-only text field showing the selected file path
+  - "Check EPUB" button (disabled until a file is selected)
+  - Scrollable monospaced text area showing the full EPUBCheck output
+  - Status label: PASS (green) / WARNINGS (amber) / ERRORS or FATAL ERRORS (red)
+  - Validation runs in a background thread (SwingWorker) so the window
+    stays responsive during checking
+  - Status is determined by parsing EPUBCheck's own summary line:
+    "Messages: X fatals / Y errors / Z warnings"
+
+.github/workflows/build-windows.yml
+  GitHub Actions pipeline that runs automatically on every push to main.
+  It runs on a Windows cloud machine and:
+    1. Checks out the repository
+    2. Installs JDK 17 (which includes the jpackage tool)
+    3. Installs WiX Toolset (required for --type exe)
+    4. Copies epubcheck.jar + all 38 lib/*.jar to a staging folder
+    5. Compiles EPUBCheckGUI.java against those JARs
+    6. Generates a valid MANIFEST.MF (Python handles the 72-byte line limit)
+    7. Packages compiled classes into EPUBCheckGUI.jar
+    8. Runs jpackage --type exe to produce a Windows installer that bundles
+       a private JRE inside -- users install nothing else
+    9. Uploads the .exe as a downloadable artifact (kept for 30 days)
+
+  jpackage options used:
+    --win-dir-chooser   lets the user choose the install folder
+    --win-shortcut      adds a Desktop shortcut
+    --win-menu          adds a Start Menu entry
+
+
+HOW TO GET THE .EXE
+-------------------
+1. Go to: https://github.com/UncleUrl/epubcheck-gui/actions
+2. Click the latest "Build Windows Installer" run (should be green after ~10 min)
+3. Scroll to the bottom of the run page -> Artifacts
+4. Download "EPUBCheck-Windows-Installer"
+5. Extract the .zip -> share the .exe inside with users
+   Users double-click it, click through the installer wizard, and the app
+   appears in their Start Menu and on their Desktop.
+
+
+HOW TO TRIGGER A NEW BUILD
+---------------------------
+Any git push to the main branch triggers the workflow automatically.
+
+To manually trigger without a code change:
+  GitHub -> Actions -> "Build Windows Installer" -> "Run workflow" button
+
+To push a change from your Mac terminal:
+  cd /Users/sensai/Desktop/epubcheck-5.2.1
+  git add .
+  git commit -m "describe your change here"
+  git push
+
+
+HOW TO MAKE CHANGES TO THE GUI
+--------------------------------
+Edit:  /Users/sensai/Desktop/epubcheck-5.2.1/src/EPUBCheckGUI.java
+Then push (see above). GitHub Actions will rebuild and produce a new .exe.
+
+Key areas in EPUBCheckGUI.java:
+  - Window size:      setSize(760, 560) near the top of the constructor
+  - Window title:     super("EPUBCheck 5.2.1")
+  - Status colours:   showStatus() calls in applyStatus()
+  - Output font size: new Font(Font.MONOSPACED, Font.PLAIN, 12)
+
+
+DEPENDENCIES
+------------
+EPUBCheck 5.2.1 — https://github.com/w3c/epubcheck
+  License: 3-Clause BSD (see LICENSE.txt)
+  All 38 dependency JARs are in the lib/ folder and are bundled into the
+  final installer by GitHub Actions.
+
+Java / JDK — Temurin 17 (Eclipse Adoptium)
+  jpackage bundles a trimmed JRE inside the installer so end-users never
+  need to install Java separately.
+
+WiX Toolset — used internally by jpackage to create the .exe installer.
+  Installed automatically by the GitHub Actions workflow; not needed locally.
+
+
+ARCHITECTURE NOTES
+------------------
+- EPUBCheck's default behaviour is to write results to System.err.
+  The GUI redirects both System.out and System.err to a ByteArrayOutputStream
+  during validation, then displays that captured text in the results area.
+
+- The Report interface in the EPUBCheck API (com.adobe.epubcheck.api.Report)
+  is complex to implement fully. Using output stream capture avoids that
+  complexity while still capturing 100% of the tool's output.
+
+- The JAR manifest Class-Path lists every dependency JAR individually.
+  jpackage copies all JARs from the --input folder into the final package,
+  so relative paths in the manifest resolve correctly at runtime.
